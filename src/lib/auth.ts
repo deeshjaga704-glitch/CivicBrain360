@@ -6,7 +6,9 @@ export async function register(email: string, password: string, fullName: string
   if (error) throw error;
 
   if (data.user) {
-    await supabase.from('profiles').upsert({ id: data.user.id, full_name: fullName, role: 'Citizen' }).throwOnError();
+    // The hand-written Database type is intentionally lightweight, so keep this
+    // profile upsert compatible with the Supabase client's runtime table shape.
+    await (supabase.from('profiles') as any).upsert({ id: data.user.id, full_name: fullName, role: 'Citizen' }).throwOnError();
   }
 
   return data;
