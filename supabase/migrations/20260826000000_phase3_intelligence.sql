@@ -50,10 +50,10 @@ coalesce(f.budget_allocated,0)::numeric budget_allocated,coalesce(f.spent_to_dat
 case when coalesce(f.full_replacement_cost,0)>0 and coalesce(f.routine_maintenance_cost,0)>0 and count(c.id) filter(where c.status not in ('CLOSED','REJECTED'))*f.routine_maintenance_cost*coalesce(f.planning_horizon_years,3)>=f.full_replacement_cost then 'REPLACEMENT' when coalesce(f.routine_maintenance_cost,0)>0 and count(c.id) filter(where c.status not in ('CLOSED','REJECTED'))>0 then 'MAINTENANCE' else 'DATA_NEEDED' end recommended_intervention
 from public.projects p left join public.complaints c on c.project_id=p.id left join public.project_financials f on f.project_id=p.id group by p.id,p.name,p.panchayat,p.status,f.budget_allocated,f.spent_to_date,f.routine_maintenance_cost,f.full_replacement_cost,f.planning_horizon_years;
 grant select on public.phase3_project_intelligence to authenticated;
-create or replace function public.run_phase3_automation() returns integer language plpgsql security definer set search_path=public as $$
+
+create or replace function public.run_phase3_automation_system() returns integer language plpgsql security definer set search_path=public as $$
 declare c public.complaints%rowtype; nearby_count integer; rule_key text; reason text; escalated integer:=0; target uuid;
 begin
- if not public.is_officer() then raise exception 'Officer access required'; end if;
  for c in select * from public.complaints where status not in ('CLOSED','REJECTED','ESCALATED') loop
   perform public.calculate_complaint_risk(c.id);
   select count(*) into nearby_count from public.complaints x where x.id<>c.id and x.status not in ('CLOSED','REJECTED') and x.category_id=c.category_id and x.created_at>=now()-interval '14 days' and abs(x.latitude-c.latitude)<=0.005 and abs(x.longitude-c.longitude)<=0.005;
@@ -75,5 +75,15 @@ begin
  end loop;
  return escalated;
 end; $$;
+revoke execute on function public.run_phase3_automation_system() from public, anon, authenticated;
+
+create or replace function public.run_phase3_automation() returns integer language plpgsql security definer set search_path=public as $$
+begin
+ if not public.is_officer() then raise exception 'Officer access required'; end if;
+ return public.run_phase3_automation_system();
+end; $$;
 grant execute on function public.run_phase3_automation() to authenticated;
-do $$ begin create extension if not exists pg_cron; perform cron.schedule('civicbrain360-phase3-escalation-hourly','0 * * * *','select public.run_phase3_automation();'); exception when others then raise notice 'pg_cron not enabled; use the Phase 3 Intelligence Center for a manual scan.'; end $$;
+
+do $$ begin create extension if not exists pg_cron; exception when others then raise notice 'pg_cron not enabled; use the Phase 3 Intelligence Center for a manual scan.'; end $$;
+select cron.unschedule('civicbrain360-phase3-escalation-hourly');
+select cron.schedule('civicbrain360-phase3-escalation-hourly','0 * * * *','select public.run_phase3_automation_system();');
