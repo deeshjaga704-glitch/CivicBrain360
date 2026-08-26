@@ -5,12 +5,9 @@ export async function register(email: string, password: string, fullName: string
   const { data, error } = await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName, role: 'Citizen' } } });
   if (error) throw error;
 
-  if (data.user) {
-    // The hand-written Database type is intentionally lightweight, so keep this
-    // profile upsert compatible with the Supabase client's runtime table shape.
-    await (supabase.from('profiles') as any).upsert({ id: data.user.id, full_name: fullName, role: 'Citizen' }).throwOnError();
-  }
-
+  // The database trigger creates the Citizen profile from auth metadata. Do not
+  // issue a second client-side write here: email-confirmation flows have no
+  // authenticated session yet and would be rejected by profiles RLS.
   return data;
 }
 
@@ -30,7 +27,7 @@ export async function getCurrentProfile() {
   const { data: { user }, error: userError } = await supabase.auth.getUser();
   if (userError) throw userError;
   if (!user) return null;
-  const { data, error } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+  const { data, error } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
   if (error) throw error;
   return data;
 }

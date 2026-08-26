@@ -1,54 +1,75 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { login, logout, register } from '@/src/lib/auth';
 import { canPerformOfficerAction } from '@/src/lib/roles';
-import { citizenVerifyResolution, createComplaint, findDuplicateComplaints, nearbyProjects, supportComplaint, transitionComplaint } from '@/src/lib/civic-supabase';
+import { citizenVerifyResolution, createComplaint, findDuplicateComplaints, nearbyProjects, supportComplaint, transitionComplaint, uploadEvidence } from '@/src/lib/civic-supabase';
 import { createSupabaseBrowserClient } from '@/src/lib/supabase';
+import { userFacingError } from '@/src/lib/errors';
 import type { Category, Complaint, Profile, Project } from '@/src/lib/types';
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Unexpected error';
+  return userFacingError(error);
 }
 
 export default function HomePage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [complaints, setComplaints] = useState<Complaint[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [message, setMessage] = useState('');
-  const [form, setForm] = useState({ categoryId: '', description: '', latitude: '12.9716', longitude: '77.5946', address: '', severity: 'MEDIUM', projectId: '' });
-  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({ title: '', categoryId: '', description: '', latitude: '12.9716', longitude: '77.5946', address: '', severity: 'MEDIUM', projectId: '' });
+  const supabase = useMemo(() => {
+    try {
+      return createSupabaseBrowserClient();
+    } catch {
+      return null;
+    }
+  }, []);
   const canOperate = canPerformOfficerAction(profile?.role);
 
-  async function refresh() {
-    const { data: authUser } = await supabase.auth.getUser();
+  const refresh = useCallback(async () => {
+    if (!supabase) {
+      setMessage('Configure NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to connect CivicBrain360.');
+      return;
+    }
+    const { data: authUser, error: authError } = await supabase.auth.getUser();
+    if (authError) throw authError;
     if (authUser.user) {
-      const { data: profileRow } = await supabase.from('profiles').select('*').eq('id', authUser.user.id).maybeSingle();
+      const { data: profileRow, error: profileError } = await supabase.from('profiles').select('*').eq('id', authUser.user.id).maybeSingle();
+      if (profileError) throw profileError;
       setProfile(profileRow ?? null);
     } else {
       setProfile(null);
     }
 
-    const [{ data: categoryRows }, { data: complaintRows }, { data: projectRows }] = await Promise.all([
+    const [categoryResult, complaintResult, projectResult] = await Promise.all([
       supabase.from('categories').select('*').eq('is_active', true).order('name'),
       supabase.from('complaints').select('*').order('created_at', { ascending: false }).limit(25),
       supabase.from('projects').select('*').order('name').limit(50)
     ]);
-    setCategories(categoryRows ?? []);
-    setComplaints(complaintRows ?? []);
-    setProjects(projectRows ?? []);
-  }
+    if (categoryResult.error) throw categoryResult.error;
+    if (complaintResult.error) throw complaintResult.error;
+    if (projectResult.error) throw projectResult.error;
+    setCategories(categoryResult.data ?? []);
+    setComplaints(complaintResult.data ?? []);
+    setProjects(projectResult.data ?? []);
+  }, [supabase]);
 
   useEffect(() => {
     refresh().catch((error) => setMessage(`Error: ${errorMessage(error)}`));
-  }, []);
+  }, [refresh]);
 
   async function submitComplaint(continueWithNew = false) {
-    const latitude = Number(form.latitude);
+    if (busy) return;
+    setBusy(true);
+    try {
+      const latitude = Number(form.latitude);
     const longitude = Number(form.longitude);
     const dupes = continueWithNew ? [] : await findDuplicateComplaints({ categoryId: form.categoryId, latitude, longitude });
 
@@ -59,9 +80,16 @@ export default function HomePage() {
 
     const nearby = await nearbyProjects(latitude, longitude);
     const projectId = form.projectId || nearby[0]?.id;
-    const id = await createComplaint({ categoryId: form.categoryId, description: form.description, latitude, longitude, address: form.address, severity: form.severity, projectId });
+    const id = await createComplaint({ title: form.title, categoryId: form.categoryId, description: form.description, latitude, longitude, address: form.address, severity: form.severity, projectId });
+    if (evidenceFile) {
+      await uploadEvidence({ file: evidenceFile, complaintId: id, evidenceType: evidenceFile.type.startsWith('image/') ? 'PHOTO' : 'DOCUMENT', metadata: { source: 'complaint_submission', original_name: evidenceFile.name, mime_type: evidenceFile.type } });
+    }
+    setEvidenceFile(null);
     setMessage(`Created complaint ${id}`);
-    await refresh();
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function supportFirstDuplicate() {
@@ -97,6 +125,7 @@ export default function HomePage() {
       </section>
 
       <section className="card"><h2>Report Issue</h2>
+        <label>Title<input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="Short summary of the issue" /></label>
         <label>Category<select value={form.categoryId} onChange={(event) => setForm({ ...form, categoryId: event.target.value })}><option value="">Select</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
         <label>Description<textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
         <label>Latitude<input value={form.latitude} onChange={(event) => setForm({ ...form, latitude: event.target.value })} /></label>
@@ -104,22 +133,23 @@ export default function HomePage() {
         <label>Address<input value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} /></label>
         <label>Severity<select value={form.severity} onChange={(event) => setForm({ ...form, severity: event.target.value })}><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>CRITICAL</option></select></label>
         <label>Related project<select value={form.projectId} onChange={(event) => setForm({ ...form, projectId: event.target.value })}><option value="">Auto / none</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+        <label>Image / evidence<input type="file" accept="image/jpeg,image/png,image/webp,application/pdf,video/mp4" onChange={(event) => setEvidenceFile(event.target.files?.[0] ?? null)} /></label>
         <nav>
-          <button onClick={() => submitComplaint(false).catch((error) => setMessage(`Error: ${errorMessage(error)}`))}>Check Duplicates / Submit</button>
+          <button disabled={busy} onClick={() => submitComplaint(false).catch((error) => setMessage(`Error: ${errorMessage(error)}`))}>{busy ? 'Submitting…' : 'Check Duplicates / Submit'}</button>
           <button className="secondary" onClick={() => supportFirstDuplicate().catch((error) => setMessage(`Error: ${errorMessage(error)}`))}>Support Existing Report</button>
-          <button className="secondary" onClick={() => submitComplaint(true).catch((error) => setMessage(`Error: ${errorMessage(error)}`))}>Continue With New Report</button>
+          <button disabled={busy} className="secondary" onClick={() => submitComplaint(true).catch((error) => setMessage(`Error: ${errorMessage(error)}`))}>Continue With New Report</button>
         </nav>
       </section>
     </div>
 
     <section className="card"><h2>Officer/Admin Operations</h2>
       {!canOperate && <p>Officer actions require Officer, Department Admin, or Super Admin role.</p>}
-      {complaints.map((complaint) => <p key={complaint.id}><strong>{complaint.id}</strong> {complaint.status} — {complaint.description}<br />
+      {complaints.map((complaint) =>       <p key={complaint.id}><strong>{complaint.id}</strong> {complaint.status} — {complaint.title}: {complaint.description}<br />
         <button disabled={!canOperate} onClick={() => transitionComplaint(complaint.id, 'VERIFIED', 'Officer verified').then(refresh).catch((error) => setMessage(`Error: ${errorMessage(error)}`))}>Verify</button>{' '}
         <button disabled={!canOperate} onClick={() => transitionComplaint(complaint.id, 'IN_PROGRESS', 'Work started').then(refresh).catch((error) => setMessage(`Error: ${errorMessage(error)}`))}>Start</button>{' '}
         <button disabled={!canOperate} onClick={() => transitionComplaint(complaint.id, 'CITIZEN_VERIFICATION', 'Resolution submitted').then(refresh).catch((error) => setMessage(`Error: ${errorMessage(error)}`))}>Submit Resolution</button>{' '}
-        <button className="secondary" onClick={() => citizenVerifyResolution(complaint.id, true).then(refresh).catch((error) => setMessage(`Error: ${errorMessage(error)}`))}>YES, ISSUE RESOLVED</button>{' '}
-        <button className="secondary" onClick={() => citizenVerifyResolution(complaint.id, false, 'Issue still exists').then(refresh).catch((error) => setMessage(`Error: ${errorMessage(error)}`))}>NO, ISSUE STILL EXISTS</button>
+        <button disabled={profile?.id !== complaint.created_by || complaint.status !== 'CITIZEN_VERIFICATION'} className="secondary" onClick={() => citizenVerifyResolution(complaint.id, true).then(refresh).catch((error) => setMessage(`Error: ${errorMessage(error)}`))}>YES, ISSUE RESOLVED</button>{' '}
+        <button disabled={profile?.id !== complaint.created_by || complaint.status !== 'CITIZEN_VERIFICATION'} className="secondary" onClick={() => citizenVerifyResolution(complaint.id, false, 'Issue still exists').then(refresh).catch((error) => setMessage(`Error: ${errorMessage(error)}`))}>NO, ISSUE STILL EXISTS</button>
       </p>)}
     </section>
 
