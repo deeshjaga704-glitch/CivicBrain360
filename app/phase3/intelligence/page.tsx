@@ -9,6 +9,7 @@ type Complaint = { id: string; title: string; severity: string; status: string; 
 type Escalation = { id: string; complaint_id: string; rule_key: string; rule_reason: string; created_at: string };
 
 const supabase = createSupabaseBrowserClient();
+const db = supabase as any;
 
 export default function IntelligenceCenter() {
   const [risks, setRisks] = useState<Risk[]>([]);
@@ -43,7 +44,7 @@ export default function IntelligenceCenter() {
     setBusy(true); setMessage('Calculating risk scores...');
     try {
       for (const complaint of complaints.filter((c) => !['CLOSED', 'REJECTED'].includes(c.status)).slice(0, 100)) {
-        const { error } = await supabase.rpc('calculate_complaint_risk', { p_complaint_id: complaint.id });
+        const { error } = await db.rpc('calculate_complaint_risk', { p_complaint_id: complaint.id });
         if (error) throw error;
       }
       await load(); setMessage('Risk scores updated using severity, age, local complaint density and project pressure.');
@@ -54,7 +55,7 @@ export default function IntelligenceCenter() {
   async function runEscalation() {
     setBusy(true); setMessage('Running escalation rules...');
     try {
-      const { data, error } = await supabase.rpc('run_phase3_automation');
+      const { data, error } = await db.rpc('run_phase3_automation');
       if (error) throw error;
       await load(); setMessage(`${data ?? 0} new complaint(s) escalated. Hourly automation is also enabled in Supabase.`);
     } catch (e) { setMessage(`Error: ${e instanceof Error ? e.message : 'Escalation failed'}`); }
@@ -70,7 +71,7 @@ export default function IntelligenceCenter() {
     if (!selectedProject) return;
     setBusy(true);
     try {
-      const { error } = await supabase.from('project_financials').upsert({
+      const { error } = await db.from('project_financials').upsert({
         project_id: selectedProject.id,
         budget_allocated: Number(financial.budget) || 0,
         spent_to_date: Number(financial.spent) || 0,
