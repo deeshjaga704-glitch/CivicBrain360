@@ -62,7 +62,10 @@ export default function HomePage() {
   }, [supabase]);
 
   useEffect(() => {
-    refresh().catch((error) => setMessage(`Error: ${errorMessage(error)}`));
+    const timer = window.setTimeout(() => {
+      void refresh().catch((error) => setMessage(`Error: ${errorMessage(error)}`));
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [refresh]);
 
   async function submitComplaint(continueWithNew = false) {

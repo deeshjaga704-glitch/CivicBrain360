@@ -119,14 +119,27 @@ export default function Phase3Page() {
     try { setDetailDuplicates((await findDuplicateComplaints({ categoryId: complaint.category_id, title: complaint.title, description: complaint.description, latitude: complaint.latitude, longitude: complaint.longitude })).filter((match) => match.id !== complaint.id)); } catch { setDetailDuplicates([]); }
   }, [supabase]);
 
-  useEffect(() => { void refresh().catch((error) => setMessage(`Error: ${msg(error)}`)); }, [refresh]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refresh().catch((error) => setMessage(`Error: ${msg(error)}`));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [refresh]);
 
   useEffect(() => {
     const requestedId = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('complaint');
     if (!requestedId || !complaints.length) return;
     const complaint = complaints.find((item) => item.id === requestedId);
-    if (complaint && selected?.id !== complaint.id) void selectComplaint(complaint).catch((error) => setMessage(`Error: ${msg(error)}`));
-    if (!complaint) setMessage('Complaint not found or you are not authorized to view it.');
+    if (complaint && selected?.id !== complaint.id) {
+      const timer = window.setTimeout(() => {
+        void selectComplaint(complaint).catch((error) => setMessage(`Error: ${msg(error)}`));
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+    if (!complaint) {
+      const timer = window.setTimeout(() => setMessage('Complaint not found or you are not authorized to view it.'), 0);
+      return () => window.clearTimeout(timer);
+    }
   }, [complaints, selected?.id, selectComplaint]);
 
   async function locate() {
